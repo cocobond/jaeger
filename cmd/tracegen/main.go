@@ -5,12 +5,18 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"flag"
 	"fmt"
+	"math/rand"
 	"time"
 
 	"github.com/go-logr/zapr"
+	"github.com/jaegertracing/jaeger/internal/jaegerclientenv2otel"
+	"github.com/jaegertracing/jaeger/internal/telemetry/otelsemconv"
+	"github.com/jaegertracing/jaeger/internal/tracegen"
+	"github.com/jaegertracing/jaeger/internal/version"
 	"go.opentelemetry.io/contrib/samplers/jaegerremote"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
@@ -23,11 +29,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-
-	"github.com/jaegertracing/jaeger/internal/jaegerclientenv2otel"
-	"github.com/jaegertracing/jaeger/internal/telemetry/otelsemconv"
-	"github.com/jaegertracing/jaeger/internal/tracegen"
-	"github.com/jaegertracing/jaeger/internal/version"
 )
 
 var flagAdaptiveSamplingEndpoint string
@@ -94,10 +95,18 @@ func createTracers(cfg *tracegen.Config, logger *zap.Logger) ([]trace.Tracer, fu
 		if err != nil {
 			logger.Sugar().Fatalf("resource creation failed: %s", err)
 		}
-
-		opts := []sdktrace.TracerProviderOption{
-			sdktrace.WithBatcher(exp, sdktrace.WithBlocking()),
-			sdktrace.WithResource(res),
+		var opts []sdktrace.TracerProviderOption
+		if !cfg.Static {
+			opts = []sdktrace.TracerProviderOption{
+				sdktrace.WithBatcher(exp, sdktrace.WithBlocking()),
+				sdktrace.WithResource(res),
+			}
+		} else {
+			opts = []sdktrace.TracerProviderOption{
+				sdktrace.WithBatcher(exp, sdktrace.WithBlocking()),
+				sdktrace.WithResource(res),
+				sdktrace.WithIDGenerator(NewPseudoRandomIDGenerator(countG)),
+			}
 		}
 		if flagAdaptiveSamplingEndpoint != "" {
 			jaegerRemoteSampler := jaegerremote.New(
@@ -144,4 +153,61 @@ func createOtelExporter(exporterType string) (sdktrace.SpanExporter, error) {
 		return nil, fmt.Errorf("unrecognized exporter type %s", exporterType)
 	}
 	return exporter, err
+}
+
+var countG int64 = 1
+
+// PseudoRandomIDGenerator For static data
+type PseudoRandomIDGenerator struct {
+	rng *rand.Rand
+}
+
+// NewPseudoRandomIDGenerator TODO 第N个TracerProvider 种子为N / 应该改成可指定
+func NewPseudoRandomIDGenerator(seed int64) sdktrace.IDGenerator {
+	src := rand.NewSource(seed)
+	countG++
+	return &PseudoRandomIDGenerator{
+		rng: rand.New(src),
+	}
+}
+
+func (g *PseudoRandomIDGenerator) NewIDs(ctx context.Context) (trace.TraceID, trace.SpanID) {
+	tid := trace.TraceID{}
+	sid := trace.SpanID{}
+
+	for {
+		binary.NativeEndian.PutUint64(tid[:8], g.rng.Uint64())
+		binary.NativeEndian.PutUint64(tid[8:], g.rng.Uint64())
+		if tid.IsValid() {
+			break
+		}
+	}
+	if !tid.IsValid() {
+		tid[0] = 1
+	}
+	for {
+		binary.NativeEndian.PutUint64(sid[:], g.rng.Uint64())
+		if sid.IsValid() {
+			break
+		}
+	}
+	if !sid.IsValid() {
+		sid[0] = 1
+	}
+
+	return tid, sid
+}
+
+func (g *PseudoRandomIDGenerator) NewSpanID(ctx context.Context, traceID trace.TraceID) trace.SpanID {
+	sid := trace.SpanID{}
+	for {
+		binary.NativeEndian.PutUint64(sid[:], g.rng.Uint64())
+		if sid.IsValid() {
+			break
+		}
+	}
+	if !sid.IsValid() {
+		sid[0] = 1
+	}
+	return sid
 }
