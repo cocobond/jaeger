@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"math/rand"
+	"sync"
 	"time"
 
 	"github.com/go-logr/zapr"
@@ -159,6 +160,7 @@ var countG int64 = 1
 
 // PseudoRandomIDGenerator For static data
 type PseudoRandomIDGenerator struct {
+	mu  sync.Mutex
 	rng *rand.Rand
 }
 
@@ -172,6 +174,9 @@ func NewPseudoRandomIDGenerator(seed int64) sdktrace.IDGenerator {
 }
 
 func (g *PseudoRandomIDGenerator) NewIDs(ctx context.Context) (trace.TraceID, trace.SpanID) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
 	tid := trace.TraceID{}
 	sid := trace.SpanID{}
 
@@ -185,6 +190,7 @@ func (g *PseudoRandomIDGenerator) NewIDs(ctx context.Context) (trace.TraceID, tr
 	if !tid.IsValid() {
 		tid[0] = 1
 	}
+
 	for {
 		binary.NativeEndian.PutUint64(sid[:], g.rng.Uint64())
 		if sid.IsValid() {
@@ -199,6 +205,9 @@ func (g *PseudoRandomIDGenerator) NewIDs(ctx context.Context) (trace.TraceID, tr
 }
 
 func (g *PseudoRandomIDGenerator) NewSpanID(ctx context.Context, traceID trace.TraceID) trace.SpanID {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
 	sid := trace.SpanID{}
 	for {
 		binary.NativeEndian.PutUint64(sid[:], g.rng.Uint64())
